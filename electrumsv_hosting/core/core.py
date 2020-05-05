@@ -1,11 +1,12 @@
+import base64
 import enum
+import json
 import logging
 import os
 from functools import partial
 import struct
 import time
-import traceback
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, Optional, Tuple, Union
 
 import asyncio
 import aiorpcx
@@ -13,6 +14,7 @@ import aiorpcx.framing
 from bitcoinx import int_to_be_bytes, PrivateKey, PublicKey, sha256
 import cbor2
 from Cryptodome.Cipher import AES, _mode_ctr
+from .utils import binary_to_hex
 
 
 logger = logging.getLogger("esvhosting-core")
@@ -41,6 +43,48 @@ class AuthenticationError(aiorpcx.ProtocolError):
 
 
 FrameableType = Union[bytes, Dict[str, Any]]
+
+
+class Header:
+
+    __slots__ = ('sender_pubkey', 'receiver_pubkey', 'sender_nonce', 'payload_hash',
+                 'sender_signature')
+
+    def __init__(self, sender_pubkey: PublicKey, receiver_pubkey: Optional[PublicKey],
+            sender_nonce: bytes, payload_hash, sender_signature: bytes):
+        self.sender_pubkey = sender_pubkey
+        self.receiver_pubkey = receiver_pubkey
+        self.sender_nonce = sender_nonce
+        self.payload_hash = payload_hash
+        self.sender_signature = sender_signature
+
+    def to_dict(self):
+        dic = {'sender_pubkey': self.sender_pubkey.to_hex(),
+             'sender_nonce': binary_to_hex(self.sender_nonce),
+             'payload_hash': binary_to_hex(self.payload_hash),
+             'sender_signature': base64.b64encode(self.sender_signature).decode()}
+
+        if self.receiver_pubkey is not None:
+            dic.update({'receiver_pubkey': self.receiver_pubkey.to_hex()})
+        return dic
+
+    def to_json(self):
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_dict(cls, dic):
+        return cls(sender_pubkey=PublicKey.from_hex(dic['sender_pubkey']),
+            receiver_pubkey=PublicKey.from_hex(dic.get('receiver_pubkey')) if dic.get(
+                'receiver_pubkey') is not None else None,
+            sender_nonce=bytes.fromhex(dic['sender_nonce']),
+            payload_hash=bytes.fromhex(dic['payload_hash']),
+            sender_signature=base64.b64decode(dic['sender_signature']))
+
+    @classmethod
+    def from_json(cls, json_string):
+        dic = json.loads(json_string)
+        return cls.from_dict(dic)
+
 
 class BaseFramer:
     _incoming_cipher: Optional[_mode_ctr.CtrMode] = None
@@ -201,7 +245,6 @@ class HandshakeNotification:
 
 
 RequestTypes = Union[Notification, Request, HandshakeNotification]
-
 
 
 class Connection:

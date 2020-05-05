@@ -1,9 +1,8 @@
 import asyncio
 import logging
-import os
 
 import aiorpcx
-from bitcoinx import PrivateKey, PublicKey
+from bitcoinx import PrivateKey
 
 from electrumsv_hosting.core import ClientSession
 
