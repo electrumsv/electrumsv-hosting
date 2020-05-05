@@ -1,7 +1,5 @@
 import asyncio
 import logging
-from pprint import pprint
-import traceback
 from typing import Any, Optional
 
 import aiorpcx
@@ -40,8 +38,6 @@ handlers = {
 }
 
 
-
-
 class ServerSession(core.ServerSession):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -64,6 +60,7 @@ class ServerSession(core.ServerSession):
         logger.debug("validate_client_identity %s %s",
             public_key.to_hex(), client_public_key.to_hex())
         if public_key != client_public_key:
+            logger.debug("validate_client_identity.not_found")
             return None
         logger.debug("validate_client_identity.match")
         return 1
