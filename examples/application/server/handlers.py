@@ -5,7 +5,8 @@ import base64
 import datetime
 import json
 import logging
-from typing import Dict
+import traceback
+from typing import Any, Dict
 
 from electrumsv_hosting.core.utils import get_nonce, binary_to_hex, hash_payload
 from electrumsv_hosting.core import Header
@@ -19,8 +20,8 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("handlers")
 
 
-def identity_is_registered(identity_pubkey) -> bool:
-    matches = Identity.select().where(Identity.identity_pubkey == identity_pubkey)
+def identity_is_registered(identity_pubkey: PublicKey) -> bool:
+    matches = Identity.select().where(Identity.identity_pubkey == identity_pubkey.to_hex())
     if len(matches) == 1:
         return True
     return False
@@ -37,14 +38,22 @@ class PublicHandlers:
     def get(self, method_name):
         return self.handlers.get(method_name)
 
-    async def register_identity(self, identity_pubkey: str) -> str:
+    async def register_identity(self, session: Any) -> str:
         logger = logging.getLogger("handlers:register-identity")
-        if identity_is_registered(identity_pubkey):
-            return "'%s' is already registered" % identity_pubkey
+        identity_pubkey = session.client_identity_pubkey
+        identity_pubkey_hex = identity_pubkey.to_hex()
+        if session.account_id is not None:
+            return "session account is already registered with '%s'" % identity_pubkey_hex
 
-        Identity.insert(identity_pubkey=identity_pubkey).execute()
-        logger.debug(f"received identity registration for: '{identity_pubkey}'")
-        return "identity registration successful for '%s'" % identity_pubkey
+        account_id = session.app.dbapi.get_account_id_for_identity_pubkey(identity_pubkey)
+        if account_id is not None:
+            return "'%s' is already registered" % identity_pubkey_hex
+
+        account_id = Identity.insert(identity_pubkey=identity_pubkey_hex).execute()
+        logger.debug(f"received identity registration for: '{identity_pubkey_hex}'")
+
+        session.set_account_id(account_id)
+        return "identity registration successful for '%s'" % identity_pubkey_hex
 
 
 class RestrictedHandlers:
@@ -97,16 +106,19 @@ class RestrictedHandlers:
     # 2) retrieve data from cache/db
     # 3) make response header -> response with header + payload
 
-    async def subscribe_to_messagebox(self, header: str, identity_pubkey: str) -> str:
+    async def subscribe_to_messagebox(self, session: Any, header: str) -> str:
         logger = logging.getLogger("handlers:[subscribe-to-messagebox]")
         header_received = Header.from_json(header)
         self._check_header_sig(header_received)
 
+        identity_pubkey = session.client_identity_pubkey
+        identity_pubkey_hex = identity_pubkey.to_hex()
+
         logger.debug(f"received 'subscribe_to_messagebox' request for identity_pubkey: "
-            f"'{identity_pubkey}' from client")
+            f"'{identity_pubkey_hex}' from client")
         message_id_count = 0  # retrieval not implemented
 
-        payload_bytes = pack_le_uint32(message_id_count)
+        payload_bytes = bitcoinx.pack_le_uint32(message_id_count)
         header_response = self._make_header(payload_bytes)
         return json.dumps({"header": header_response.to_dict(),
                            "message_id_count": message_id_count})
@@ -129,7 +141,7 @@ class RestrictedHandlers:
                            "message": message})
 
     # One Endpoint for Mailbox messages
-    async def send_message(self, header: str, encrypted_base64_payload: str) -> str:
+    async def send_message(self, session: Any, header: str, encrypted_base64_payload: str) -> str:
         """Stores an encrypted contact_request payload for the given identity pubkey"""
         logger = logging.getLogger("handlers:[send-message]")
         header_received_json = json.loads(header)

@@ -1,4 +1,3 @@
-"""Adapted from https://github.com/electrumsv/electrumsv-hosting example mailbox_server"""
 import asyncio
 import logging
 import os
@@ -21,37 +20,20 @@ from server import database
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("example-mailbox_server")
 
-# I don't know how to attach these to the PublicServerSession and RestrictedServerSession
-# tried functools.partials but still jams up the __init__ with too many arguments...
 public_handlers = PublicHandlers()
 restricted_handlers = RestrictedHandlers(SERVER_PRIVATE_KEY)
-
-
-class PublicServerSession(aiorpcx.RPCSession):
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        print(f'connection from {self.remote_address()}')
-
-    async def connection_lost(self):
-        await super().connection_lost()
-        print(f'{self.remote_address()} disconnected')
-
-    async def handle_request(self, request):
-        handler = public_handlers.get(request.method)
-        coro = aiorpcx.handler_invocation(handler, request)()
-        return await coro
 
 
 class RestrictedServerSession(core.ServerSession):
     """A TCP Server that connects to a bitcoin wallet client via WP42 tunneling"""
 
-    client_identity_key: Optional[PublicKey] = None
+    client_identity_pubkey: Optional[PublicKey] = None
     account_id: Optional[int] = None
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, app: 'ServerApplication', *args, **kwargs) -> None:
+        self.app = app
         super().__init__(*args, **kwargs)
-        print(f'connection from {self.remote_address()}')
+        logger.debug('connection from %s', self.remote_address())
 
     def send_batch(self, raise_errors=False):
         raise NotImplementedError
@@ -60,21 +42,36 @@ class RestrictedServerSession(core.ServerSession):
         await super().connection_lost()
         logger.debug(f'{self.remote_address()} disconnected')
 
+    def get_handlers(self) -> Any:
+        if self.account_id is None:
+            return public_handlers
+        return restricted_handlers
+
     async def handle_request(self, request: core.RequestTypes) -> Any:
         if isinstance(request, core.HandshakeNotification):
-            self.client_identity_key = request.identity_public_key
+            self.client_identity_pubkey = request.identity_public_key
+            self.account_id = self.app.dbapi.get_account_id_for_identity_pubkey(
+                self.client_identity_pubkey)
             return None
 
-        logger.debug("handle_request")
-        handler = restricted_handlers.get(request.method)
+        # logger.debug("handle_request:enter '%s'", request.method)
+        handler_func = self.get_handlers().get(request.method)
+        if handler_func is None:
+            logger.debug("bad handler for '%s'", request.method)
+        handler = partial(handler_func, self)
         coro = aiorpcx.handler_invocation(handler, request)()
-        return await coro
+        ret = await coro
+        # logger.debug("handle_request:exit")
+        return ret
 
     async def get_shared_secret(self, client_identity_public_key: PublicKey,
             message_bytes: bytes) -> bytes:
         shared_secret_public_key = SERVER_PRIVATE_KEY.shared_secret(client_identity_public_key,
             message_bytes)
         return int_to_be_bytes(shared_secret_public_key.to_point()[0])
+
+    def set_account_id(self, account_id: int) -> None:
+        self.account_id = account_id
 
 
 DEFAULT_ENV_VARS = [
@@ -141,6 +138,14 @@ def loop_exception_handler(loop, context) -> None:
     logger.debug(context)
 
 
+class ServerApplication:
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.dbapi = database.DatabaseAPI()
+
+    def create_session(self, *args, **kwargs) -> RestrictedServerSession:
+        return RestrictedServerSession(self, *args, **kwargs)
+
 def main():
     setup()
 
@@ -151,20 +156,14 @@ def main():
     loop = asyncio.get_event_loop()
     loop.set_exception_handler(loop_exception_handler)
 
-    # handlers = PublicHandlers()
-    # session_factory = partial(PublicServerSession, handlers)
-    # public_server = loop.run_until_complete(
-    #     aiorpcx.serve_rs(session_factory, 'localhost', 8889))
-    #
     # handlers = RestrictedHandlers(SERVER_PRIVATE_KEY)
     # session_factory = partial(RestrictedServerSession, SERVER_PRIVATE_KEY, handlers)
     # restricted_server = loop.run_until_complete(
     #     aiorpcx.serve_rs(session_factory, 'localhost', 8888))
 
-    public_server = loop.run_until_complete(
-        aiorpcx.serve_rs(PublicServerSession, 'localhost', 8889))
+    app = ServerApplication(loop)
     restricted_server = loop.run_until_complete(
-        aiorpcx.serve_rs(RestrictedServerSession, 'localhost', 8888))
+        aiorpcx.serve_rs(app.create_session, 'localhost', 8888))
 
     loop.create_task(wakeup())
     try:

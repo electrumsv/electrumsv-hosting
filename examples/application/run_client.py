@@ -16,7 +16,8 @@ from electrumsv_hosting.core.utils import get_nonce, hash_payload, binary_to_hex
 from electrumsv_hosting.core import Header, ClientSession
 
 from client.constants import SERVER_PUBLIC_KEY, ALICE_TEST_IDENTITY_PUBLIC_KEY, \
-    ALICE_TEST_IDENTITY_PRIVATE_KEY, BOB_TEST_IDENTITY_PUBLIC_KEY
+    ALICE_TEST_IDENTITY_PRIVATE_KEY, BOB_TEST_IDENTITY_PUBLIC_KEY, \
+    BOB_TEST_IDENTITY_PRIVATE_KEY
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -27,13 +28,6 @@ class PublicClientSession(aiorpcx.RPCSession):
     """public access - no sender signature required - required because a WP42 tunnel cannot be
     established prior to initial registration of an identity pubkey."""
 
-    async def register_identity(self, pubkey) -> str:
-        # Todo
-        #  1) security challenge - e.g. sign recent timestamp
-
-        result = await self.send_request('register_identity', [pubkey])
-        logger.debug('register-identity: %s', result)
-        return result
 
 
 class RestrictedClientSession(ClientSession):
@@ -43,6 +37,14 @@ class RestrictedClientSession(ClientSession):
         super().__init__(*args, **kwargs)
         self.identity_privkey: PrivateKey = identity_privkey
         self.identity_pubkey: PublicKey = identity_privkey.public_key
+
+    async def register_identity(self) -> str:
+        # Todo
+        #  1) security challenge - e.g. sign recent timestamp
+
+        result = await self.send_request('register_identity', [])
+        logger.debug('register-identity: %s', result)
+        return result
 
     def _sign_message(self, sender_pubkey: PublicKey, nonce: bytes, payload_hash: bytes) -> bytes:
         for_signing: str = self.identity_pubkey.to_bytes() + nonce + payload_hash
@@ -110,10 +112,10 @@ class RestrictedClientSession(ClientSession):
     #     raise NotImplementedError
 
     # ----- Endpoints ----- #
-    async def subscribe_to_messagebox(self, identity_pubkey: PublicKey) -> str:
+    async def subscribe_to_messagebox(self) -> str:
         logger = logging.getLogger("subscribe-to-messagebox")
-        header = self._make_header(identity_pubkey.to_bytes(compressed=True))
-        args = [header.to_json(), identity_pubkey.to_hex()]
+        header = self._make_header(self.identity_pubkey.to_bytes(compressed=True))
+        args = [header.to_json()]
         response = await self.send_request('subscribe_to_messagebox', args)
         self._check_header_sig(response)
         logger.debug("response=%s", response)
@@ -149,30 +151,63 @@ class RestrictedClientSession(ClientSession):
 
 async def main():
     # Connect to public endpoint to register identity pubkey
-    async with aiorpcx.connect_rs(host='localhost', port=8889,
-            session_factory=PublicClientSession) as session:
+    # async with aiorpcx.connect_rs(host='localhost', port=8889,
+    #         session_factory=PublicClientSession) as session:
 
-        session: PublicClientSession
+    #     session: PublicClientSession
 
-        alice_pubkey_hex = ALICE_TEST_IDENTITY_PUBLIC_KEY.to_hex()
-        register_alice = await session.register_identity(alice_pubkey_hex)
 
-        bob_pubkey_hex = BOB_TEST_IDENTITY_PUBLIC_KEY.to_hex()
-        register_bob = await session.register_identity(bob_pubkey_hex)
+    #     bob_pubkey_hex = BOB_TEST_IDENTITY_PUBLIC_KEY.to_hex()
+    #     register_bob = await session.register_identity(bob_pubkey_hex)
 
     # Connect via WP42 tunnel for everything else
+
+    # Register Alice.
     session_factory = partial(RestrictedClientSession, ALICE_TEST_IDENTITY_PRIVATE_KEY)
     async with aiorpcx.connect_rs(host='localhost', port=8888, session_factory=session_factory) \
             as session:
 
         session: RestrictedClientSession
         await session.server_handshake(session.identity_privkey, SERVER_PUBLIC_KEY)
-        logger.debug("client_handshake successful")
+        logger.debug("client_handshake successful for Alice")
+
+        register_alice = await session.register_identity()
+        logger.debug("registered Alice")
+
+    session_factory = partial(RestrictedClientSession, BOB_TEST_IDENTITY_PRIVATE_KEY)
+    async with aiorpcx.connect_rs(host='localhost', port=8888, session_factory=session_factory) \
+            as session:
+
+        session: RestrictedClientSession
+        await session.server_handshake(session.identity_privkey, SERVER_PUBLIC_KEY)
+        logger.debug("client_handshake successful for Bob")
+
+        register_alice = await session.register_identity()
+        logger.debug("registered Bob")
 
         message_type = "custom_message_type"
         payload = {"message_type": message_type,
-                   "message": "Alice's secret p2p message to Bob"}
-        response = await session.send_message(receiver_pubkey=BOB_TEST_IDENTITY_PUBLIC_KEY,
+                   "message": "Bob's secret p2p message to Alice"}
+        response = await session.send_message(receiver_pubkey=ALICE_TEST_IDENTITY_PUBLIC_KEY,
             payload=payload, message_type=message_type)
+
+    # session_factory = partial(RestrictedClientSession, ALICE_TEST_IDENTITY_PRIVATE_KEY)
+    # async with aiorpcx.connect_rs(host='localhost', port=8888, session_factory=session_factory) \
+    #         as session:
+
+    #     session: RestrictedClientSession
+    #     await session.server_handshake(session.identity_privkey, SERVER_PUBLIC_KEY)
+    #     logger.debug("client_handshake successful for Alice")
+
+    #     a = await session.subscribe_to_messagebox()
+
+    #     response = await session.get_message()
+
+    #     message_type = "custom_message_type"
+    #     payload = {"message_type": message_type,
+    #                "message": "Bob's secret p2p message to Alice"}
+    #     response = await session.send_message(receiver_pubkey=ALICE_TEST_IDENTITY_PRIVATE_KEY,
+    #         payload=payload, message_type=message_type)
+
 
 asyncio.get_event_loop().run_until_complete(main())

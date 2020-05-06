@@ -1,4 +1,8 @@
-from peewee import (PostgresqlDatabase, Model, CharField, DateTimeField, BlobField, AutoField)
+from typing import Optional
+
+from bitcoinx import PublicKey
+from peewee import (PostgresqlDatabase, Model, CharField, DateTimeField, BlobField, AutoField,
+    DoesNotExist)
 
 from .constants import DATABASE_NAME_VARNAME, \
     DATABASE_USER_VARNAME, DATABASE_HOST_VARNAME, DATABASE_PORT_VARNAME, DATABASE_PASSWORD_VARNAME
@@ -24,6 +28,16 @@ class Message(BaseModel):
     sender_signature = CharField()
     date_created = DateTimeField()
     payload = BlobField()  # base_64_encoded ciphertext
+
+
+class DatabaseAPI:
+    def get_account_id_for_identity_pubkey(self, identity_pubkey: PublicKey) -> Optional[int]:
+        try:
+            return Identity.select(Identity.id).where(
+                Identity.identity_pubkey == identity_pubkey.to_hex()).get().id
+        except Identity.DoesNotExist:
+            return None
+
 
 
 def load(config) -> PostgresqlDatabase:
