@@ -17,9 +17,8 @@ Public Identity Registration
 register_identity
 ******************
 This endpoint is an exception to the rule in that no headers, signatures or authentication
-are required because an alias and identity public key are required for those things.
+are required because an identity public key is required for those things.
 
-It registers an alias to the server with a designated identity pubkey.
 A security challenge must be completed, proving control of the identity pubkey
 (e.g. signing a recent unix timestamp - within the last 60 minutes).
 
@@ -45,8 +44,9 @@ is omitted (e.g. get_id_key, subscribe_to_messagebox, get_message
     'sender_signature' (signs the above 4 fields - base64 encoded)
 
 
-For authentication between client and server the sender signature covers the sender_pubkey, sender_nonce, payload_hash
-but **not** the receiver_pubkey for sake of uniformity (receiver_pubkey is not always included).
+For authentication between client and server the sender signature covers the sender_pubkey,
+sender_nonce, payload_hash but **not** the receiver_pubkey for sake of uniformity (receiver_pubkey
+is not always included).
 
 Payload
 *******
@@ -54,10 +54,6 @@ Base64 encoded json +/- encryption (for Mailbox endpoints)
 
 Client-Server Endpoints
 #######################
-
-get_id_key
-************
-Get an identity pubkey for a given human-readable alias
 
 subscribe_to_messagebox
 ***********************
@@ -84,33 +80,21 @@ for the service provider.
 
 send_message
 ************
-Below are several example message types (agreed to between two peers) - centered around using the well
-recognised w3c identity-protocols_ for DID_ and verifiable credentials_ as well as BIP270_ for p2p payments
+This is a protocol agnostic endpoint. It is a generic container for any encrypted p2p (or mailbox-based) communication
+between two parties.
 
-.. _identity-protocols: https://w3c.github.io/did-core/
-.. _DID: https://w3c.github.io/did-core/
-.. _credentials: https://w3c.github.io/vc-data-model/
-.. _BIP270: https://github.com/moneybutton/bips/blob/master/bip-0270.mediawiki
+However, it is recommended that each party employ techniques from WP0042 for establishing the shared secret for
+encryption. The nonce in the plaintext header (see above) should be used for generating the message hash and
+in turn the derived keys and shared secret.
 
-^^^^^^^^^^^^^^
-message types:
-^^^^^^^^^^^^^^
+encryption
+--------------------
+An optional extension is to use the WP0042 spec. (ref. V1: Hierarchy of Hashes) technique for subsequent messages
+(and perhaps bitcoin transaction keys too). Each peer may agree that the first nonce in the sequence of messages holds special
+significance and every new outbound message uses the next nonce in the sequence (rehashing this landmark
+nonce N times for the Nth message of the p2p relationship). This nth hash is then used for shared secret
+derivation and encryption.
 
-contact_request
----------------
-We do not wish to impose our own implementation. However, I imagines this payload to
-include something like:
-
-.. code-block:: python
-
-    - message_type: 'contact_request'
-    - sender DID document (see https://w3c.github.io/did-core/) - namely on-chain identity pubkey
-    - sender VCs (proof of identity - see https://w3c.github.io/vc-data-model/)
-    - sender IPv4/6 address/port - Optional (and whatever else is needed for direct p2p communication)
-
-The nonce of a contact_request **header** holds special significance. Every new message uses the next nonce
-in the sequence (rehashing this landmark nonce N times for the Nth message of the p2p relationship).
-This nth hash is then used for shared secret derivation and encryption.
 As per the WP0042 spec.
 
     1) contact_request *encrypts* using V2C and P2S -> S
@@ -124,34 +108,11 @@ The sequence continues (As per the WP0042 spec - V1: Hierarchy of Hashes):
 ... and so on to V2C'' and V2C''' etc. **re-hashing the original nonce N times to get to the
 Nth set of keys**
 
-The advantage of this approach rather than using a fresh nonce every time is to do with on-chain
-backup solutions. With the 'Hierarchy of Hashes' approach, everything that is required for
-full disaster-recovery is contained within the 1st exchange of contact information.
-
-Furthermore, the overall model of establishing payment scripts this way sidesteps the problems
-with the current paymail/bsvalias implementation of having a server that **takes responsibility
+The advantage of this approach (if it is used for the bitcoin transaction keys) rather than using
+a fresh nonce every time is to do with on-chain backup solutions. With the 'Hierarchy of Hashes'
+approach, everything that is required for full disaster-recovery is contained within the 1st exchange
+of contact information. Furthermore, this model for generating payment scripts sidesteps the problems
+with the current paymail/bsvalias implementation of having a server that takes responsibility
 (along with the liability of running a secure service) for giving out correct Bip32-derived
-payment scripts/pubpkeys**. So as I see it, there are only benefits and no downsides to shifting
+payment scripts/pubpkeys. So as I see it, there are only benefits and no downsides to shifting
 this responsibility to rest solely in the hands of the two peers.
-
-
-contact_response
-----------------
-The same as the received :code:`'contact_request'` message - from which ongoing p2p or mailbox-based communication
-can continue.
-
-send_transaction
-------------------------------
-A raw, signed bitcoin transaction only
-
-send_payment_request (bip270)
------------------------------
-see https://github.com/moneybutton/bips/blob/master/bip-0270.mediawiki
-
-send_payment (bip270)
-----------------------
-see https://github.com/moneybutton/bips/blob/master/bip-0270.mediawiki
-
-send_payment_ack (bip270)
--------------------------
-see https://github.com/moneybutton/bips/blob/master/bip-0270.mediawiki

@@ -15,9 +15,8 @@ from Cryptodome.Cipher import AES
 from electrumsv_hosting.core.utils import get_nonce, hash_payload, binary_to_hex, int_to_hex
 from electrumsv_hosting.core import Header, ClientSession
 
-from client.constants import SERVER_PUBLIC_KEY, ALICE_TEST_ALIAS, \
-    ALICE_TEST_IDENTITY_PUBLIC_KEY, ALICE_TEST_IDENTITY_PRIVATE_KEY, BOB_TEST_IDENTITY_PUBLIC_KEY, \
-    BOB_TEST_ALIAS
+from client.constants import SERVER_PUBLIC_KEY, ALICE_TEST_IDENTITY_PUBLIC_KEY, \
+    ALICE_TEST_IDENTITY_PRIVATE_KEY, BOB_TEST_IDENTITY_PUBLIC_KEY
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -28,12 +27,11 @@ class PublicClientSession(aiorpcx.RPCSession):
     """public access - no sender signature required - required because a WP42 tunnel cannot be
     established prior to initial registration of an identity pubkey."""
 
-    async def register_identity(self, alias, pubkey) -> str:
+    async def register_identity(self, pubkey) -> str:
         # Todo
         #  1) security challenge - e.g. sign recent timestamp
-        #  2) hoarding of aliases
 
-        result = await self.send_request('register_identity', [alias, pubkey])
+        result = await self.send_request('register_identity', [pubkey])
         logger.debug('register-identity: %s', result)
         return result
 
@@ -112,14 +110,6 @@ class RestrictedClientSession(ClientSession):
     #     raise NotImplementedError
 
     # ----- Endpoints ----- #
-    async def get_identity_key(self, alias: str) -> str:
-        logger = logging.getLogger("get-identity-key")
-        header = self._make_header(alias.encode('utf-8'))
-        response = await self.send_request('get_id_key', [header.to_json(), alias])
-        self._check_header_sig(response)
-        logger.debug("response=%s", response)
-        return response
-
     async def subscribe_to_messagebox(self, identity_pubkey: PublicKey) -> str:
         logger = logging.getLogger("subscribe-to-messagebox")
         header = self._make_header(identity_pubkey.to_bytes(compressed=True))
@@ -157,33 +147,6 @@ class RestrictedClientSession(ClientSession):
         logger.debug("response=%s", response)
         return response
 
-    # ----- P2P / mailbox messages ----- (via `RestrictedClientSession.send_message()`) #
-    async def send_contact_request(self, receiver_pubkey: PublicKey):
-        """One example usecase of a mailbox message"""
-        logger = logging.getLogger("send-contact-request")
-        message_type = "contact_request"
-        nonce = get_nonce()  # establishes the landmark first nonce for the relationship
-        payload = {"message_type": message_type,
-                   "did_document": "https://w3c.github.io/did-core/ goes here",
-                   "verifiable_credentials": "https://w3c.github.io/vc-data-model/ goes here",
-                   "sender_ip": "char[16] / IPv6/4 goes here"}
-
-        logger.debug("send-contact-request: sending payload=%s", payload)
-        result = await self.send_message(receiver_pubkey, payload, message_type, nonce=nonce)
-        return result
-
-    async def send_contact_response(self, receiver_alias, receiver_pubkey):
-        raise NotImplementedError
-
-    async def get_received_contact_requests(self):
-        """get personal history of received contact requests"""
-        raise NotImplementedError
-
-    async def get_sent_contact_responses(self):
-        """get personal history of sent contact responses"""
-        raise NotImplementedError
-
-
 async def main():
     # Connect to public endpoint to register identity pubkey
     async with aiorpcx.connect_rs(host='localhost', port=8889,
@@ -192,10 +155,10 @@ async def main():
         session: PublicClientSession
 
         alice_pubkey_hex = ALICE_TEST_IDENTITY_PUBLIC_KEY.to_hex()
-        register_alice = await session.register_identity(ALICE_TEST_ALIAS, alice_pubkey_hex)
+        register_alice = await session.register_identity(alice_pubkey_hex)
 
         bob_pubkey_hex = BOB_TEST_IDENTITY_PUBLIC_KEY.to_hex()
-        register_bob = await session.register_identity(BOB_TEST_ALIAS, bob_pubkey_hex)
+        register_bob = await session.register_identity(bob_pubkey_hex)
 
     # Connect via WP42 tunnel for everything else
     session_factory = partial(RestrictedClientSession, ALICE_TEST_IDENTITY_PRIVATE_KEY)
@@ -206,10 +169,10 @@ async def main():
         await session.server_handshake(session.identity_privkey, SERVER_PUBLIC_KEY)
         logger.debug("client_handshake successful")
 
-        alice_identity_pubkey = await session.get_identity_key(alias=ALICE_TEST_ALIAS)
-
-        bob_identity_pubkey = await session.get_identity_key(BOB_TEST_ALIAS)
-
-        result = await session.send_contact_request(receiver_pubkey=BOB_TEST_IDENTITY_PUBLIC_KEY)
+        message_type = "custom_message_type"
+        payload = {"message_type": message_type,
+                   "message": "Alice's secret p2p message to Bob"}
+        response = await session.send_message(receiver_pubkey=BOB_TEST_IDENTITY_PUBLIC_KEY,
+            payload=payload, message_type=message_type)
 
 asyncio.get_event_loop().run_until_complete(main())

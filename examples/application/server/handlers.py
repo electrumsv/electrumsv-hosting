@@ -10,30 +10,17 @@ from typing import Dict
 from electrumsv_hosting.core.utils import get_nonce, binary_to_hex, hash_payload
 from electrumsv_hosting.core import Header
 
-from .constants import BOB_TEST_ALIAS, BOB_TEST_IDENTITY_PUBLIC_KEY, \
-    ALICE_TEST_ALIAS, ALICE_TEST_IDENTITY_PUBLIC_KEY, Errors, SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY
-from .database import Alias, Message
+from .constants import BOB_TEST_IDENTITY_PUBLIC_KEY, ALICE_TEST_IDENTITY_PUBLIC_KEY, \
+    SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY
+from .database import Identity, Message
 from . import database
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("handlers")
 
 
-def get_pubkey_for_alias(alias) -> PublicKey:
-    logger = logging.getLogger("handlers:get_pubkey_for_alias")
-    # as a temporary stand-in for an actual database
-    try:
-        row = Alias.get(Alias.alias == alias)
-        return PublicKey.from_hex(row.identity_pubkey)
-    except Alias.DoesNotExist as e:
-        logger.error(e)
-        raise aiorpcx.RPCError(
-            Errors.ALIAS_PUBKEY_NOT_FOUND_CODE,
-            Errors.ALIAS_PUBKEY_NOT_FOUND_MESSAGE)
-
-
-def identity_is_registered(alias) -> bool:
-    matches = Alias.select().where(Alias.alias == alias)
+def identity_is_registered(identity_pubkey) -> bool:
+    matches = Identity.select().where(Identity.identity_pubkey == identity_pubkey)
     if len(matches) == 1:
         return True
     return False
@@ -50,15 +37,14 @@ class PublicHandlers:
     def get(self, method_name):
         return self.handlers.get(method_name)
 
-    async def register_identity(self, alias: str, identity_pubkey: str) -> str:
+    async def register_identity(self, identity_pubkey: str) -> str:
         logger = logging.getLogger("handlers:register-identity")
-        """Adds alias and pubkey to Alias table"""
-        if identity_is_registered(alias):
-            return "identity for '%s' is already registered - choose a different alias" % alias
+        if identity_is_registered(identity_pubkey):
+            return "'%s' is already registered" % identity_pubkey
 
-        Alias.insert(alias=alias, identity_pubkey=identity_pubkey).execute()
-        logger.debug(f"received identity registration for: '{alias}'")
-        return "identity registration successful for '%s'" % alias
+        Identity.insert(identity_pubkey=identity_pubkey).execute()
+        logger.debug(f"received identity registration for: '{identity_pubkey}'")
+        return "identity registration successful for '%s'" % identity_pubkey
 
 
 class RestrictedHandlers:
@@ -68,7 +54,6 @@ class RestrictedHandlers:
         self.server_private_key = server_private_key
         self.server_public_key = self.server_private_key.public_key
         self.handlers = {
-            'get_id_key': self.get_id_key,
             'subscribe_to_messagebox': self.subscribe_to_messagebox,
             'get_message': self.get_message,
             'send_message': self.send_message
@@ -112,20 +97,6 @@ class RestrictedHandlers:
     # 2) retrieve data from cache/db
     # 3) make response header -> response with header + payload
 
-    async def get_id_key(self, header: str, alias: str) -> str:
-        logger = logging.getLogger("handlers:[get-id-key]")
-        header_received = Header.from_json(header)
-        self._check_header_sig(header_received)
-
-        logger.debug(f"request for alias: '{alias}' from client")
-        identity_pubkey = get_pubkey_for_alias(alias)
-
-        payload_bytes = alias.encode('utf-8')
-        header_response = self._make_header(payload_bytes)
-        return json.dumps({"header": header_response.to_dict(),
-                           "identity_pubkey": identity_pubkey.to_hex()})
-
-
     async def subscribe_to_messagebox(self, header: str, identity_pubkey: str) -> str:
         logger = logging.getLogger("handlers:[subscribe-to-messagebox]")
         header_received = Header.from_json(header)
@@ -159,7 +130,7 @@ class RestrictedHandlers:
 
     # One Endpoint for Mailbox messages
     async def send_message(self, header: str, encrypted_base64_payload: str) -> str:
-        """Stores an encrypted contact_request payload for the given alias"""
+        """Stores an encrypted contact_request payload for the given identity pubkey"""
         logger = logging.getLogger("handlers:[send-message]")
         header_received_json = json.loads(header)
         header_received = Header.from_dict(header_received_json)

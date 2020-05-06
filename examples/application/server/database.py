@@ -12,8 +12,7 @@ class BaseModel(Model):
         database = db
 
 
-class Alias(BaseModel):
-    alias = CharField(max_length=32, unique=True, primary_key=True)
+class Identity(BaseModel):
     identity_pubkey = CharField(max_length=66)  # hex
 
 
@@ -36,8 +35,8 @@ def load(config) -> PostgresqlDatabase:
 
     db.init(database=database_name, user=database_user, host=host, port=port, password=password)
     db.connect()
-    db.drop_tables([Alias, Message], safe=True)  # Todo - remove when finished testing
-    db.create_tables([Alias, Message], safe=True)
+    db.drop_tables([Identity, Message], safe=True)  # Todo - remove when finished testing
+    db.create_tables([Identity, Message], safe=True)
     db.close()
     return db
 
