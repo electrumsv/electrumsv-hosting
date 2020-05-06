@@ -7,8 +7,8 @@ import json
 import logging
 from typing import Dict
 
-from core.utils import get_nonce, binary_to_hex, hash_payload
-from core import Header
+from electrumsv_hosting.core.utils import get_nonce, binary_to_hex, hash_payload
+from electrumsv_hosting.core import Header
 
 from .constants import BOB_TEST_ALIAS, BOB_TEST_IDENTITY_PUBLIC_KEY, \
     ALICE_TEST_ALIAS, ALICE_TEST_IDENTITY_PUBLIC_KEY, Errors, SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY

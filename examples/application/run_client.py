@@ -1,22 +1,21 @@
-"""Adapted from https://github.com/electrumsv/electrumsv-hosting example client"""
+import asyncio
 import base64
 from functools import partial
-from typing import Any, Tuple, Dict, Optional
-import asyncio
 import json
 import logging
+from typing import Any, Tuple, Dict, Optional
+
 import aiorpcx
 import attr
-from Cryptodome import Cipher
-from Cryptodome.Cipher import AES
 from bitcoinx import hash_to_hex_str, PublicKey, sha256, PrivateKey, int_to_be_bytes, \
     double_sha256, pack_le_uint32
+from Cryptodome import Cipher
+from Cryptodome.Cipher import AES
 
-import core
-from core.utils import get_nonce, hash_payload, binary_to_hex, int_to_hex
-from core import Header
+from electrumsv_hosting.core.utils import get_nonce, hash_payload, binary_to_hex, int_to_hex
+from electrumsv_hosting.core import Header, ClientSession
 
-from client_lib.constants import SERVER_PUBLIC_KEY, ALICE_TEST_ALIAS, \
+from client.constants import SERVER_PUBLIC_KEY, ALICE_TEST_ALIAS, \
     ALICE_TEST_IDENTITY_PUBLIC_KEY, ALICE_TEST_IDENTITY_PRIVATE_KEY, BOB_TEST_IDENTITY_PUBLIC_KEY, \
     BOB_TEST_ALIAS
 
@@ -39,7 +38,7 @@ class PublicClientSession(aiorpcx.RPCSession):
         return result
 
 
-class RestrictedClientSession(core.ClientSession):
+class RestrictedClientSession(ClientSession):
     """restricted access - requires sender_signature"""
 
     def __init__(self, identity_privkey, *args, **kwargs):

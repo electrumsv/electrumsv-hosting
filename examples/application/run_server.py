@@ -9,13 +9,13 @@ from functools import partial
 
 import aiorpcx
 from bitcoinx import int_to_be_bytes, PublicKey, PrivateKey
-from core import core
+from electrumsv_hosting.core import core
 
-from server_lib.handlers import RestrictedHandlers, PublicHandlers
-from server_lib.constants import ALICE_TEST_IDENTITY_PUBLIC_KEY, SERVER_PRIVATE_KEY, \
+from server.handlers import RestrictedHandlers, PublicHandlers
+from server.constants import ALICE_TEST_IDENTITY_PUBLIC_KEY, SERVER_PRIVATE_KEY, \
     DATABASE_NAME_VARNAME, BITCOIN_NETWORK_VARNAME, DATABASE_USER_VARNAME, DATABASE_HOST_VARNAME, \
     DATABASE_PORT_VARNAME, DATABASE_PASSWORD_VARNAME, LOGGING_LEVEL_VARNAME
-from server_lib import database
+from server import database
 
 
 logging.basicConfig(level=logging.DEBUG)
