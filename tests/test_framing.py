@@ -22,7 +22,7 @@ expected_shared_secret_bytes = bytes.fromhex(
     "b460676d590eb7912c683474c6d16f94b4f84576d18d4564d055535a6c73c23b")
 
 
-async def get_shared_secret_standard(account_id: int, client_identity_public_key: PublicKey,
+async def get_shared_secret_standard(client_identity_public_key: PublicKey,
         message_bytes: bytes) -> bytes:
     shared_secret_public_key = server_private_key.shared_secret(client_identity_public_key,
         message_bytes)
@@ -62,48 +62,24 @@ async def test_handshake_framing() -> None:
         server_private_key.public_key)
     assert len(client_handshake_message_bytes) == core.HANDSHAKE_LENGTH
 
-    async def validate_client_identity(client_identity_public_key: PublicKey) -> Optional[int]:
-        return 1
-
     shared_secret_bytes: Optional[bytes] = None
-    async def get_shared_secret(account_id: int, client_identity_public_key: PublicKey,
+    async def get_shared_secret(client_identity_public_key: PublicKey,
             message_bytes: bytes) -> bytes:
         nonlocal shared_secret_bytes
-        shared_secret_bytes = await get_shared_secret_standard(account_id,
+        shared_secret_bytes = await get_shared_secret_standard(
             client_identity_public_key, message_bytes)
         return shared_secret_bytes
 
     server_framer = PredictableServerFramer()
-    server_framer.validate_client_identity = validate_client_identity
     server_framer.get_shared_secret = get_shared_secret
 
     assert not server_framer._handshaken
     server_framer.received_bytes(client_handshake_message_bytes)
     result = await server_framer._receive_handshake_message()
     assert server_framer._handshaken
-    assert 1 == result["account_id"]
     assert client_private_key.public_key == result["identity_key"]
     assert client_message_key_hex == result["message_key"].to_hex()
     assert expected_shared_secret_bytes == shared_secret_bytes
-
-
-@pytest.mark.asyncio
-async def test_handshake_framing_identity_fail() -> None:
-    client_framer = core.ClientFramer()
-    client_handshake_message_bytes = client_framer.frame_handshake(client_private_key,
-        server_private_key.public_key)
-
-    async def validate_client_identity(client_identity_public_key: PublicKey) -> Optional[int]:
-        return None
-
-    server_framer = core.ServerFramer()
-    server_framer.validate_client_identity = validate_client_identity
-
-    server_framer.received_bytes(client_handshake_message_bytes)
-    with pytest.raises(core.AuthenticationError) as e:
-        await server_framer._receive_handshake_message()
-
-    assert core.ErrorCodes.INVALID_CLIENT_IDENTITY == e.value.args[0]
 
 
 @pytest.mark.asyncio
@@ -112,20 +88,16 @@ async def test_handshake_framing_timing_fail() -> None:
     client_handshake_message_bytes = client_framer.frame_handshake(client_private_key,
         server_private_key.public_key)
 
-    async def validate_client_identity(client_identity_public_key: PublicKey) -> Optional[int]:
-        return 1
-
     shared_secret_bytes: Optional[bytes] = None
-    async def get_shared_secret(account_id: int, client_identity_public_key: PublicKey,
+    async def get_shared_secret(client_identity_public_key: PublicKey,
             message_bytes: bytes) -> bytes:
         nonlocal shared_secret_bytes
-        shared_secret_bytes = await get_shared_secret_standard(account_id,
+        shared_secret_bytes = await get_shared_secret_standard(
             client_identity_public_key, message_bytes)
         return shared_secret_bytes
 
     # On the lower edge of the range, should just pass.
     server_framer = PredictableServerFramer()
-    server_framer.validate_client_identity = validate_client_identity
     server_framer.get_shared_secret = get_shared_secret
     server_framer.set_timestamp(client_timestamp - core.HANDSHAKE_TIMESTAMP_VARIANCE)
     server_framer.received_bytes(client_handshake_message_bytes)
@@ -133,7 +105,6 @@ async def test_handshake_framing_timing_fail() -> None:
 
     # On the higher edge of the range, should just pass.
     server_framer = PredictableServerFramer()
-    server_framer.validate_client_identity = validate_client_identity
     server_framer.get_shared_secret = get_shared_secret
     server_framer.set_timestamp(client_timestamp + core.HANDSHAKE_TIMESTAMP_VARIANCE)
     server_framer.received_bytes(client_handshake_message_bytes)
@@ -141,7 +112,6 @@ async def test_handshake_framing_timing_fail() -> None:
 
     # Just over the lower edge of the range, should just fail.
     server_framer = PredictableServerFramer()
-    server_framer.validate_client_identity = validate_client_identity
     server_framer.get_shared_secret = get_shared_secret
     server_framer.set_timestamp(client_timestamp + (core.HANDSHAKE_TIMESTAMP_VARIANCE + 1))
     server_framer.received_bytes(client_handshake_message_bytes)
@@ -151,7 +121,6 @@ async def test_handshake_framing_timing_fail() -> None:
 
     # Just over the higher edge of the range, should just fail.
     server_framer = PredictableServerFramer()
-    server_framer.validate_client_identity = validate_client_identity
     server_framer.get_shared_secret = get_shared_secret
     server_framer.set_timestamp(client_timestamp + (core.HANDSHAKE_TIMESTAMP_VARIANCE + 1))
     server_framer.received_bytes(client_handshake_message_bytes)

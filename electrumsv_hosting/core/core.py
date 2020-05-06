@@ -24,7 +24,6 @@ HANDSHAKE_LENGTH = 4 + 33 + 12 + 65
 HANDSHAKE_TIMESTAMP_VARIANCE = 5
 
 class ErrorCodes(enum.IntEnum):
-    INVALID_CLIENT_IDENTITY = 20000
     INVALID_CLIENT_SIGNATURE = 20001
     INVALID_CLIENT_TIMESTAMP = 20002
     INVALID_CLIENT_VERSION = 20003
@@ -165,48 +164,31 @@ class ServerFramer(BaseFramer):
             raise AuthenticationError(ErrorCodes.INVALID_CLIENT_VERSION,
                 "unrecognized protocol version")
 
-        client_identity_public_key = PublicKey.from_bytes(client_identity_public_key_bytes)
-        logger.debug("_receive_handshake_message.validate_client_identity")
-        account_id = await self.validate_client_identity(client_identity_public_key)
-        if account_id is None:
-            logger.debug("_receive_handshake_message.exit")
-            # TODO(rt12) blacklist ip, have extending period of blacklisting?
-            raise AuthenticationError(ErrorCodes.INVALID_CLIENT_IDENTITY,
-                "unrecognized client identity key")
-
-        logger.debug("_receive_handshake_message %d", 1)
         timestamp, nonce_bytes = struct.unpack_from("<I8s", message_bytes)
-        logger.debug("ts %d %d %d",
-            self._get_timestamp(), timestamp, self._get_timestamp() - timestamp)
         if abs(self._get_timestamp() - timestamp) > HANDSHAKE_TIMESTAMP_VARIANCE:
             raise AuthenticationError(ErrorCodes.INVALID_CLIENT_TIMESTAMP,
                 "timestamp out of range")
 
-        logger.debug("_receive_handshake_message %d", 2)
+        client_identity_public_key = PublicKey.from_bytes(client_identity_public_key_bytes)
         message_hash = sha256(message_bytes)
         client_message_public_key = client_identity_public_key.add(message_hash)
         if not client_message_public_key.verify_message(signature_bytes, message_bytes):
             raise AuthenticationError(ErrorCodes.INVALID_CLIENT_SIGNATURE,
                 "invalid client signature")
 
-        shared_secret_bytes = await self.get_shared_secret(account_id, client_identity_public_key,
+        shared_secret_bytes = await self.get_shared_secret(client_identity_public_key,
             message_bytes)
         self._outgoing_cipher = AES.new(shared_secret_bytes, AES.MODE_CTR, nonce=nonce_bytes)
         self._incoming_cipher = AES.new(shared_secret_bytes, AES.MODE_CTR, nonce=nonce_bytes)
         self._handshaken = True
 
         return {
-            "account_id": account_id,
             "identity_key": client_identity_public_key,
             "message_key": client_message_public_key,
         }
 
     # External API
-    async def validate_client_identity(self,
-            client_identity_public_key: PublicKey) -> Optional[int]:
-        raise NotImplementedError
-
-    async def get_shared_secret(self, account_id: int, client_identity_public_key: PublicKey,
+    async def get_shared_secret(self, client_identity_public_key: PublicKey,
             message_bytes: bytes) -> bytes:
         # shared_secret_public_key = server_id_private_key.shared_secret(client_identity_public_key,
         #     message_bytes)
@@ -234,14 +216,17 @@ class Request(aiorpcx.Request):
 
 
 class HandshakeNotification:
-    def __init__(self, account_id: Optional[int]=None, identity_key: Optional[PublicKey]=None,
+    def __init__(self, identity_key: Optional[PublicKey]=None,
             message_key: Optional[PublicKey]=None) -> None:
-        assert account_id is not None
-        self._account_id = account_id
         assert identity_key is not None
-        self._identity_public_key = identity_key
+        self.identity_public_key = identity_key
         assert message_key is not None
-        self._message_public_key = message_key
+        self.message_public_key = message_key
+
+    def __repr__(self) -> str:
+        return "<HandshakeNotification id_key=%s msg_key=%s>" % (
+            self.identity_public_key.to_bytes().hex(),
+            self.message_public_key.to_bytes().hex())
 
 
 RequestTypes = Union[Notification, Request, HandshakeNotification]
@@ -257,9 +242,8 @@ class Connection:
         raise NotImplementedError
 
     def receive_message(self, data: Dict[str, Any]) -> Optional[Iterable[RequestTypes]]:
-        if "account_id" in data:
-            return [ HandshakeNotification(data["account_id"], data["identity_key"],
-                data["message_key"]) ]
+        if "identity_key" in data:
+            return [ HandshakeNotification(data["identity_key"], data["message_key"]) ]
 
         method = data.get("method")
         request_id = data.get("request_id")
@@ -361,7 +345,6 @@ class ClientSession(BaseSession):
 class ServerSession(BaseSession):
     def default_framer(self) -> ServerFramer:
         framer = ServerFramer()
-        framer.validate_client_identity = self.validate_client_identity
         framer.get_shared_secret = self.get_shared_secret
         return framer
 
@@ -372,15 +355,10 @@ class ServerSession(BaseSession):
     #         traceback.print_exc()
     #         raise e
 
-    async def validate_client_identity(self, public_key: PublicKey) -> Optional[int]:
-        # Returns `None` to indicate the identity was not validated.
-        # Override and resolve the public key.
-        raise NotImplementedError
-
     # The application needs to override this and employ it's own private key, in order to
     # derive the shared secret. The application can manage the security and privacy of the key
     # as the core code does not need to know it.
-    async def get_shared_secret(self, account_id: int, client_identity_public_key: PublicKey,
+    async def get_shared_secret(self, client_identity_public_key: PublicKey,
             message_bytes: bytes) -> bytes:
         # shared_secret_public_key = server_id_private_key.shared_secret(client_identity_public_key,
         #     message_bytes)

@@ -46,7 +46,10 @@ class PublicServerSession(aiorpcx.RPCSession):
 class RestrictedServerSession(core.ServerSession):
     """A TCP Server that connects to a bitcoin wallet client via WP42 tunneling"""
 
-    def __init__(self, *args, **kwargs):
+    client_identity_key: Optional[PublicKey] = None
+    account_id: Optional[int] = None
+
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         print(f'connection from {self.remote_address()}')
 
@@ -59,23 +62,15 @@ class RestrictedServerSession(core.ServerSession):
 
     async def handle_request(self, request: core.RequestTypes) -> Any:
         if isinstance(request, core.HandshakeNotification):
+            self.client_identity_key = request.identity_public_key
             return None
+
         logger.debug("handle_request")
         handler = restricted_handlers.get(request.method)
         coro = aiorpcx.handler_invocation(handler, request)()
         return await coro
 
-    async def validate_client_identity(self, public_key: PublicKey) -> Optional[int]:
-        logger.debug("validate_client_identity %s %s", public_key.to_hex(),
-            ALICE_TEST_IDENTITY_PUBLIC_KEY.to_hex())
-        # this will need to be dynamic to lookup the appropriate pubkey from db
-        if public_key != ALICE_TEST_IDENTITY_PUBLIC_KEY:
-            logger.debug("validate_client_identity.not_found")
-            return None
-        logger.debug("validate_client_identity.match")
-        return 1
-
-    async def get_shared_secret(self, account_id: int, client_identity_public_key: PublicKey,
+    async def get_shared_secret(self, client_identity_public_key: PublicKey,
             message_bytes: bytes) -> bytes:
         shared_secret_public_key = SERVER_PRIVATE_KEY.shared_secret(client_identity_public_key,
             message_bytes)

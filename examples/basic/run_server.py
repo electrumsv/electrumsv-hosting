@@ -56,16 +56,7 @@ class ServerSession(core.ServerSession):
         coro = aiorpcx.handler_invocation(handler, request)()
         return await coro
 
-    async def validate_client_identity(self, public_key: PublicKey) -> Optional[int]:
-        logger.debug("validate_client_identity %s %s",
-            public_key.to_hex(), client_public_key.to_hex())
-        if public_key != client_public_key:
-            logger.debug("validate_client_identity.not_found")
-            return None
-        logger.debug("validate_client_identity.match")
-        return 1
-
-    async def get_shared_secret(self, account_id: int, client_identity_public_key: PublicKey,
+    async def get_shared_secret(self, client_identity_public_key: PublicKey,
             message_bytes: bytes) -> bytes:
         logger.debug("get_shared_secret")
         shared_secret_public_key = server_private_key.shared_secret(client_identity_public_key,
