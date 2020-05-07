@@ -1,3 +1,21 @@
+electrumsv-hosting
+~~~~~~~~~~~~~~~~~~
+
+  Licence: BitcoinSV
+  Maintainers: Roger Taylor, AustEcon
+  Project Lead: Roger Taylor
+  Language: Python (>=3.6)
+  Homepage: https://electrumsv.io/
+
+This library is intended to encapsulate the protocol used by the ElectrumSV wallet to open
+an encrypted connection with either a hosted service that operates on their behalf, or other
+ElectrumSV wallets.
+
+This library is under development. Until it is integrated into ElectrumSV and released, it may
+change in ways that break the API it exposes to developers who may wish to use it.
+
+See the **examples** folder for different examples of the current code in use.
+
 Hosted Mailbox
 ==================================
 The mailbox server takes connections from clients via WP42 tunnel and facilitates the delivery of encrypted messages

@@ -1,0 +1,4 @@
+aiorpcx>=0.18.4
+bitcoinx>=0.2.4
+cbor2>=5.01
+Cryptodome>=3.9.0
