@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import enum
 import json
@@ -6,13 +7,12 @@ import os
 from functools import partial
 import struct
 import time
+import traceback
 from typing import Any, Dict, Iterable, Optional, Tuple, Union
 
-import asyncio
 import aiorpcx
 import aiorpcx.framing
 from bitcoinx import int_to_be_bytes, PrivateKey, PublicKey, sha256
-import cbor2
 from Cryptodome.Cipher import AES, _mode_ctr
 from .utils import binary_to_hex
 
@@ -98,20 +98,20 @@ class BaseFramer:
         if isinstance(data, bytes):
             return data
 
-        message_bytes = cbor2.dumps(data)
-        encypted_message_bytes = self._outgoing_cipher.encrypt(message_bytes)
+        message_bytes = json.dumps(data).encode()
+        encrypted_message_bytes = self._outgoing_cipher.encrypt(message_bytes)
         return b''.join((
-            struct.pack("<I", len(encypted_message_bytes)),
-            encypted_message_bytes,
+            struct.pack("<I", len(encrypted_message_bytes)),
+            encrypted_message_bytes,
         ))
 
     async def receive_message(self) -> Dict[str, Any]:
         message_length_bytes = await self.byte_queue.receive(4)
         message_length = struct.unpack("<I", message_length_bytes)[0]
 
-        encypted_message_bytes = await self.byte_queue.receive(message_length)
-        message_bytes = self._incoming_cipher.decrypt(encypted_message_bytes)
-        return cbor2.loads(message_bytes)
+        encrypted_message_bytes = await self.byte_queue.receive(message_length)
+        message_bytes = self._incoming_cipher.decrypt(encrypted_message_bytes)
+        return json.loads(message_bytes.decode())
 
     def _get_timestamp(self) -> int:
         return int(time.time())
@@ -348,12 +348,12 @@ class ServerSession(BaseSession):
         framer.get_shared_secret = self.get_shared_secret
         return framer
 
-    # async def _process_messages(self, recv_message):
-    #     try:
-    #         return await super()._process_messages(recv_message)
-    #     except Exception as e:
-    #         traceback.print_exc()
-    #         raise e
+    async def _process_messages(self, recv_message):
+        try:
+            return await super()._process_messages(recv_message)
+        except Exception as e:
+            # traceback.print_exc()
+            raise e
 
     # The application needs to override this and employ it's own private key, in order to
     # derive the shared secret. The application can manage the security and privacy of the key

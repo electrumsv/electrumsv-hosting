@@ -10,7 +10,7 @@ with open("requirements.txt", "r") as f:
 
 setuptools.setup(
     name="electrumsv-hosting",
-    version="0.1.0",
+    version="0.1.3",
     author="Roger Taylor",
     author_email="roger.taylor.email@gmail.com",
     description="Supporting code for ElectrumSV wallets to communicate using encrypted connections",
