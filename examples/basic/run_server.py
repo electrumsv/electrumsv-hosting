@@ -1,11 +1,15 @@
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any, cast, Optional
 
 import aiorpcx
 from bitcoinx import int_to_be_bytes, PrivateKey, PublicKey
 
-from electrumsv_hosting import core
+from electrumsv_hosting.connection import HandshakeNotification, Message, ServerSession
+from electrumsv_hosting.constants import CODE_ERROR, HANDSHAKE_MESSAGE_TYPE
+
+from messages import (EchoMessageRequest, EchoMessageResponse, MessageType, SumMessageRequest,
+    SumMessageResponse)
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -32,34 +36,35 @@ async def handle_sum(*values):
     return sum(values, 0)
 
 
-handlers = {
-    'echo': handle_echo,
-    'sum': handle_sum,
-}
+class BasicServerSession(ServerSession):
+    def __init__(self, transport, *, loop=None, connection=None):
+        super().__init__(transport, loop=loop, connection=connection)
+        logger.debug("connected: %s", self.remote_address())
 
-
-class ServerSession(core.ServerSession):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        logger.debug(f'connection from {self.remote_address()}')
-
-    async def connection_lost(self):
+    async def connection_lost(self) -> None:
         await super().connection_lost()
-        logger.debug(f'{self.remote_address()} disconnected')
+        logger.debug("disconnected: %s", self.remote_address())
 
-    async def handle_request(self, request: core.RequestTypes) -> Any:
-        if isinstance(request, core.HandshakeNotification):
+    async def handle_message(self, message: Message) -> Any:
+        logger.debug("handle_message %s", message)
+
+        if message.message_type == HANDSHAKE_MESSAGE_TYPE:
             return None
 
-        logger.debug("handle_request")
-        handler = handlers.get(request.method)
-        coro = aiorpcx.handler_invocation(handler, request)()
-        return await coro
+        if message.message_type == MessageType.SUM_REQUEST:
+            sum_request = cast(SumMessageRequest, message)
+            summed_value = await handle_sum(sum_request.l_value, sum_request.r_value)
+            return SumMessageResponse(summed_value)
+        elif message.message_type == MessageType.ECHO_REQUEST:
+            echo_request = cast(EchoMessageRequest, message)
+            echoed_text = await handle_echo(echo_request.data.decode())
+            return EchoMessageResponse(echoed_text.encode())
 
-    async def get_shared_secret(self, client_identity_public_key: PublicKey,
-            message_bytes: bytes) -> bytes:
+        raise aiorpcx.RPCError(CODE_ERROR, f'bad message "{message.message_type}"')
+
+    async def get_shared_secret(self, client_public_key: PublicKey, message_bytes: bytes) -> bytes:
         logger.debug("get_shared_secret")
-        shared_secret_public_key = server_private_key.shared_secret(client_identity_public_key,
+        shared_secret_public_key = server_private_key.shared_secret(client_public_key,
             message_bytes)
         return int_to_be_bytes(shared_secret_public_key.to_point()[0])
 
@@ -68,13 +73,13 @@ def loop_exception_handler(loop, context) -> None:
     logger.debug('Exception handler called')
     logger.debug(context)
 
-async def wakeup():
+async def wakeup() -> None:
     while True:
         await asyncio.sleep(0.2)
 
 loop = asyncio.get_event_loop()
 loop.set_exception_handler(loop_exception_handler)
-server = loop.run_until_complete(aiorpcx.serve_rs(ServerSession, 'localhost', 8888))
+server = loop.run_until_complete(aiorpcx.serve_rs(BasicServerSession, 'localhost', 8888))
 loop.create_task(wakeup())
 try:
     loop.run_forever()

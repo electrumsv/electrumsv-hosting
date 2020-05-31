@@ -1,0 +1,7 @@
+global-include LICENCE README.rst
+global-include requirements.txt
+
+graft electrumsv_hosting
+
+global-exclude __pycache__
+global-exclude *.py[co]

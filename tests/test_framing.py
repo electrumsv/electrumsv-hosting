@@ -1,10 +1,14 @@
 from typing import Optional
-
-import pytest
+import unittest
 
 from bitcoinx import int_to_be_bytes, PrivateKey, PublicKey
+import pytest
 
-from electrumsv_hosting import core
+import electrumsv_hosting
+from electrumsv_hosting import connection
+
+
+connection.HandshakeNotification.register()
 
 
 client_private_key_bytes = bytes.fromhex(
@@ -29,101 +33,59 @@ async def get_shared_secret_standard(client_identity_public_key: PublicKey,
     return int_to_be_bytes(shared_secret_public_key.to_point()[0])
 
 
-class PredictableClientFramer(core.ClientFramer):
-    def _get_nonce_bytes(self) -> bytes:
-        global client_nonce_bytes
-        return client_nonce_bytes
-
-    def _get_timestamp(self) -> int:
-        global client_timestamp
-        return client_timestamp
-
-
-class PredictableServerFramer(core.ServerFramer):
-    _timestamp = client_timestamp
-
-    def set_timestamp(self, timestamp: int) -> None:
-        self._timestamp = timestamp
-
-    def _get_timestamp(self) -> int:
-        return self._timestamp
-
-
 def test_server_frame_no_handshake() -> None:
-    server_framer = core.ServerFramer()
-    with pytest.raises(core.ConnectionNotEstablishedError):
+    server_framer = connection.ServerFramer()
+    with pytest.raises(connection.ConnectionNotEstablishedError):
         server_framer.frame({})
 
 
 @pytest.mark.asyncio
 async def test_handshake_framing() -> None:
-    client_framer = PredictableClientFramer()
-    client_handshake_message_bytes = client_framer.frame_handshake(client_private_key,
-        server_private_key.public_key)
-    assert len(client_handshake_message_bytes) == core.HANDSHAKE_LENGTH
+    client_message = connection.HandshakeNotification(connection.PROTOCOL_VERSION,
+        client_private_key.public_key, client_timestamp, client_nonce_bytes)
+    client_message.sign(client_private_key)
+    client_packet = connection.Packet(connection.PacketType.NOTIFICATION, client_message)
 
-    shared_secret_bytes: Optional[bytes] = None
-    async def get_shared_secret(client_identity_public_key: PublicKey,
-            message_bytes: bytes) -> bytes:
-        nonlocal shared_secret_bytes
-        shared_secret_bytes = await get_shared_secret_standard(
-            client_identity_public_key, message_bytes)
-        return shared_secret_bytes
+    client_framer = connection.ClientFramer()
+    client_handshake_message_bytes = client_framer.frame(client_packet)
 
-    server_framer = PredictableServerFramer()
-    server_framer.get_shared_secret = get_shared_secret
-
+    server_framer = connection.ServerFramer()
     assert not server_framer._handshaken
     server_framer.received_bytes(client_handshake_message_bytes)
-    result = await server_framer._receive_handshake_message()
-    assert server_framer._handshaken
-    assert client_private_key.public_key == result["identity_key"]
-    assert client_message_key_hex == result["message_key"].to_hex()
-    assert expected_shared_secret_bytes == shared_secret_bytes
+    server_packet = await server_framer.receive_message()
+    assert client_message.version == server_packet.message.version
+    assert client_message.remote_public_key == server_packet.message.remote_public_key
+    assert client_message.timestamp == server_packet.message.timestamp
+    assert client_message.nonce_bytes == server_packet.message.nonce_bytes
+    assert client_message.signature_bytes == server_packet.message.signature_bytes
 
 
-@pytest.mark.asyncio
+@pytest.mark.timeout(8)
 async def test_handshake_framing_timing_fail() -> None:
-    client_framer = PredictableClientFramer()
-    client_handshake_message_bytes = client_framer.frame_handshake(client_private_key,
-        server_private_key.public_key)
-
-    shared_secret_bytes: Optional[bytes] = None
-    async def get_shared_secret(client_identity_public_key: PublicKey,
-            message_bytes: bytes) -> bytes:
-        nonlocal shared_secret_bytes
-        shared_secret_bytes = await get_shared_secret_standard(
-            client_identity_public_key, message_bytes)
-        return shared_secret_bytes
+    client_message = connection.HandshakeNotification(connection.PROTOCOL_VERSION,
+        client_private_key.public_key, client_timestamp, client_nonce_bytes)
+    client_message.sign(client_private_key)
 
     # On the lower edge of the range, should just pass.
-    server_framer = PredictableServerFramer()
-    server_framer.get_shared_secret = get_shared_secret
-    server_framer.set_timestamp(client_timestamp - core.HANDSHAKE_TIMESTAMP_VARIANCE)
-    server_framer.received_bytes(client_handshake_message_bytes)
-    await server_framer._receive_handshake_message()
+    with unittest.mock.patch("electrumsv_hosting.connection.get_timestamp",
+            return_value=client_timestamp - connection.HANDSHAKE_TIMESTAMP_VARIANCE):
+        client_message.validate()
 
     # On the higher edge of the range, should just pass.
-    server_framer = PredictableServerFramer()
-    server_framer.get_shared_secret = get_shared_secret
-    server_framer.set_timestamp(client_timestamp + core.HANDSHAKE_TIMESTAMP_VARIANCE)
-    server_framer.received_bytes(client_handshake_message_bytes)
-    await server_framer._receive_handshake_message()
+    with unittest.mock.patch("electrumsv_hosting.connection.get_timestamp",
+            return_value=client_timestamp + connection.HANDSHAKE_TIMESTAMP_VARIANCE):
+        client_message.validate()
 
     # Just over the lower edge of the range, should just fail.
-    server_framer = PredictableServerFramer()
-    server_framer.get_shared_secret = get_shared_secret
-    server_framer.set_timestamp(client_timestamp + (core.HANDSHAKE_TIMESTAMP_VARIANCE + 1))
-    server_framer.received_bytes(client_handshake_message_bytes)
-    with pytest.raises(core.AuthenticationError) as e:
-        await server_framer._receive_handshake_message()
-    assert core.ErrorCodes.INVALID_CLIENT_TIMESTAMP == e.value.args[0]
+    with unittest.mock.patch("electrumsv_hosting.connection.get_timestamp",
+            return_value=client_timestamp - (connection.HANDSHAKE_TIMESTAMP_VARIANCE + 1)):
+        with pytest.raises(connection.AuthenticationError) as e:
+            client_message.validate()
+        assert connection.ErrorCodes.INVALID_CLIENT_TIMESTAMP == e.value.args[0]
 
     # Just over the higher edge of the range, should just fail.
-    server_framer = PredictableServerFramer()
-    server_framer.get_shared_secret = get_shared_secret
-    server_framer.set_timestamp(client_timestamp + (core.HANDSHAKE_TIMESTAMP_VARIANCE + 1))
-    server_framer.received_bytes(client_handshake_message_bytes)
-    with pytest.raises(core.AuthenticationError) as e:
-        await server_framer._receive_handshake_message()
-    assert core.ErrorCodes.INVALID_CLIENT_TIMESTAMP == e.value.args[0]
+    with unittest.mock.patch("electrumsv_hosting.connection.get_timestamp",
+            return_value=client_timestamp + (connection.HANDSHAKE_TIMESTAMP_VARIANCE + 1)):
+        with pytest.raises(connection.AuthenticationError) as e:
+            client_message.validate()
+        assert connection.ErrorCodes.INVALID_CLIENT_TIMESTAMP == e.value.args[0]

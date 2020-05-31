@@ -6,14 +6,16 @@ import logging
 from typing import Any, Tuple, Dict, Optional
 
 import aiorpcx
-import attr
 from bitcoinx import hash_to_hex_str, PublicKey, sha256, PrivateKey, int_to_be_bytes, \
     double_sha256, pack_le_uint32
 from Cryptodome import Cipher
 from Cryptodome.Cipher import AES
 
-from electrumsv_hosting.core.utils import get_nonce, hash_payload, binary_to_hex, int_to_hex
-from electrumsv_hosting.core import Header, ClientSession
+from electrumsv_hosting.connection import Header, ClientSession
+from electrumsv_hosting.utils import get_nonce, hash_payload, binary_to_hex, int_to_hex
+from electrumsv_hosting.messagebox import (GetMessageRequest, GetMessageResponse,
+    MessageHeader, RegisterIdentityRequest, RegisterIdentityResponse, SendMessageRequest,
+    SendMessageResponse, SubscriptionRequest)
 
 from client.constants import SERVER_PUBLIC_KEY, ALICE_TEST_IDENTITY_PUBLIC_KEY, \
     ALICE_TEST_IDENTITY_PRIVATE_KEY, BOB_TEST_IDENTITY_PUBLIC_KEY, \
@@ -39,10 +41,8 @@ class RestrictedClientSession(ClientSession):
         self.identity_pubkey: PublicKey = identity_privkey.public_key
 
     async def register_identity(self) -> str:
-        # Todo
-        #  1) security challenge - e.g. sign recent timestamp
-
-        result = await self.send_request('register_identity', [])
+        message = RegisterIdentityRequest()
+        result: RegisterIdentityResponse = await self.send_request(message)
         logger.debug('register-identity: %s', result)
         return result
 
@@ -51,101 +51,54 @@ class RestrictedClientSession(ClientSession):
         signature = self.identity_privkey.sign_message(for_signing)
         return signature
 
-    def _make_header(self, payload: bytes, receiver_pubkey=None, nonce=None):
-        nonce = nonce or get_nonce()
-        payload_hash = hash_payload(payload)
-        signature = self._sign_message(self.identity_pubkey, nonce, payload_hash)
-        header = Header(sender_pubkey=self.identity_pubkey, receiver_pubkey=receiver_pubkey,
-            sender_nonce=nonce, payload_hash=payload_hash, sender_signature=signature)
-        return header
+    # def _check_header_sig(self, header: MessageHeader):
+    #     result_json = json.loads(result)
+    #     header_received = result_json['header']
+    #     signed_message = PublicKey.from_hex(header_received['sender_pubkey']).to_bytes() + \
+    #         bytes.fromhex(header_received['sender_nonce']) + \
+    #         bytes.fromhex(header_received['payload_hash'])
 
-    def _check_header_sig(self, result):
-        result_json = json.loads(result)
-        header_received = result_json['header']
-        signed_message = PublicKey.from_hex(header_received['sender_pubkey']).to_bytes() + \
-            bytes.fromhex(header_received['sender_nonce']) + \
-            bytes.fromhex(header_received['payload_hash'])
+    #     check_sig_result = SERVER_PUBLIC_KEY.verify_message(
+    #         message_sig=header_received['sender_signature'],
+    #         message=signed_message, hasher=double_sha256)
+    #     if check_sig_result:
+    #         logger.debug("check-message-sig-client: signature check for trusted mailbox_server "
+    #                      "passed")
+    #     else:
+    #         logger.error("check-message-sig-client: signature check for mailbox_server failed!")
 
-        check_sig_result = SERVER_PUBLIC_KEY.verify_message(
-            message_sig=header_received['sender_signature'],
-            message=signed_message, hasher=double_sha256)
-        if check_sig_result:
-            logger.debug("check-message-sig-client: signature check for trusted mailbox_server "
-                         "passed")
-        else:
-            logger.error("check-message-sig-client: signature check for mailbox_server failed!")
-
-    # def _get_derived_keys(self, nonce: bytes, receiver_pubkey: PublicKey) -> Tuple[PrivateKey,
-    #         PublicKey]:
-    #     nonce_hash = sha256(nonce)  # SHA-256(M)
-    #
-    #     # Phase II, step 6 WP0042 -> V2C = VMC + SHA-256(M)
-    #     private_key2_client = self.identity_privkey.add(nonce_hash)
-    #
-    #     # Phase II, step 8 WP0042 -> P2S = PMS + SHA-256(M) X G
-    #     public_key2_receiver = receiver_pubkey.add(nonce_hash)
-    #     return private_key2_client, public_key2_receiver
-
-    def _get_shared_secret(self, receiver_pubkey: PublicKey, nonce: bytes) -> bytes:
+    def get_shared_secret(self, receiver_pubkey: PublicKey, nonce: bytes) -> bytes:
         logger.debug("get_shared_secret")
         shared_secret_public_key = self.identity_privkey.shared_secret(receiver_pubkey, nonce)
         return int_to_be_bytes(shared_secret_public_key.to_point()[0])
 
-    def _get_cipher(self, shared_secret_public_key, nonce) -> Cipher:
-        cipher = AES.new(shared_secret_public_key, AES.MODE_CTR, nonce=nonce)
-        return cipher
-
-    def _make_ciphertext(self, receiver_pubkey: PublicKey, payload: Dict[Any, Any], nonce: bytes):
-        """converts json to binary ciphertext"""
-        # 1) encode json to utf-8
-        payload_bytes = json.dumps(payload).encode("utf-8")
-
-        # 2) encrypt with shared secret
-        shared_secret = self._get_shared_secret(receiver_pubkey, nonce)
-        cipher = self._get_cipher(shared_secret, nonce)
-        return cipher.encrypt(payload_bytes)
-
-    # def send_batch(self, raise_errors=False):
-    #     raise NotImplementedError
-    #
-    # async def handle_request(self, request: core.RequestTypes) -> Any:
-    #     raise NotImplementedError
-
     # ----- Endpoints ----- #
     async def subscribe_to_messagebox(self) -> str:
         logger = logging.getLogger("subscribe-to-messagebox")
-        header = self._make_header(self.identity_pubkey.to_bytes(compressed=True))
-        args = [header.to_json()]
-        response = await self.send_request('subscribe_to_messagebox', args)
-        self._check_header_sig(response)
+        response = await self.send_request(SubscriptionRequest())
         logger.debug("response=%s", response)
         return response
 
-    async def get_message(self, message_id: int) -> str:
+    async def get_message(self, message_id: int) -> GetMessageResponse:
         logger = logging.getLogger("get-message")
-        payload = int_to_hex(message_id)
-        header = self._make_header(bytes.fromhex(payload))
-        args = [header.to_json(), int_to_hex(message_id)]
-        response = await self.send_request('subscribe_to_messagebox', args)
-        self._check_header_sig(response)
+        response: GetMessageResponse = await self.send_request(GetMessageRequest(message_id))
         logger.debug("response=%s", response)
         return response
 
-    async def send_message(self, receiver_pubkey: PublicKey, payload: Dict, message_type: str,
-            nonce: Optional[bytes]=None):
+    async def send_message(self, receiver_pubkey: PublicKey, payload: bytes, message_type: str,
+            nonce: Optional[bytes]=None) -> SendMessageResponse:
         logger = logging.getLogger("send-message")
         logger.debug("sending encrypted message (type='%s') to pubkey=%s", message_type,
             receiver_pubkey)
 
-        nonce = nonce or get_nonce()  # contact_request messages supply landmark nonce
-        ciphertext_payload = self._make_ciphertext(receiver_pubkey, payload, nonce)
-
-        # Note: the receiver_pubkey and nonce are actually specified here to link header to payload
-        header = self._make_header(ciphertext_payload, receiver_pubkey=receiver_pubkey, nonce=nonce)
-
-        args = [header.to_json(), base64.b64encode(ciphertext_payload).decode()]
-        response = await self.send_request('send_message', args)
-        self._check_header_sig(response)
+        nonce = nonce or get_nonce()
+        payload_hash = hash_payload(payload)
+        signature = self._sign_message(self.identity_pubkey, nonce, payload_hash)
+        header = MessageHeader(self.identity_pubkey, receiver_pubkey, nonce, payload_hash,
+            signature)
+        message = SendMessageRequest(header, payload)
+        response: SendMessageResponse = await self.send_request(message)
+        assert isinstance(response, SendMessageResponse)
         logger.debug("response=%s", response)
         return response
 
@@ -171,7 +124,7 @@ async def main():
         await session.server_handshake(session.identity_privkey, SERVER_PUBLIC_KEY)
         logger.debug("client_handshake successful for Alice")
 
-        register_alice = await session.register_identity()
+        _register_alice = await session.register_identity()
         logger.debug("registered Alice")
 
     session_factory = partial(RestrictedClientSession, BOB_TEST_IDENTITY_PRIVATE_KEY)
@@ -182,13 +135,13 @@ async def main():
         await session.server_handshake(session.identity_privkey, SERVER_PUBLIC_KEY)
         logger.debug("client_handshake successful for Bob")
 
-        register_alice = await session.register_identity()
+        _register_bob = await session.register_identity()
         logger.debug("registered Bob")
 
         message_type = "custom_message_type"
         payload = {"message_type": message_type,
                    "message": "Bob's secret p2p message to Alice"}
-        response = await session.send_message(receiver_pubkey=ALICE_TEST_IDENTITY_PUBLIC_KEY,
+        _response = await session.send_message(receiver_pubkey=ALICE_TEST_IDENTITY_PUBLIC_KEY,
             payload=payload, message_type=message_type)
 
     # session_factory = partial(RestrictedClientSession, ALICE_TEST_IDENTITY_PRIVATE_KEY)
