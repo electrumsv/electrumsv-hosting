@@ -3,7 +3,7 @@ from typing import Any, Optional, Dict
 
 from bitcoinx import int_to_be_bytes, PublicKey
 
-from electrumsv_hosting.connection import Message, ServerSession
+from electrumsv_hosting.connection import HandshakeNotification,Message, Packet, ServerSession
 from electrumsv_hosting.messagebox import MessageType
 
 from server.handlers import BaseAPI, PublicAPI, RestrictedAPI
@@ -34,10 +34,10 @@ class IncomingClientSession(ServerSession):
         await super().connection_lost()
         logger.debug(f'{self.remote_address()} disconnected')
 
-    async def handle_request(self, request_message: Message) -> Any:
-        logger.debug("handle_request:enter '%s'", request_message.message_type)
+    async def handle_message(self, message: Message) -> Any:
+        logger.debug("handle_request:enter '%s'", message.message_type)
         api: BaseAPI = public_api if self.client_identity_id is None else restricted_api
-        response_message = await api.dispatch_message(self, request_message)
+        response_message = await api.dispatch_message(self, message)
         logger.debug("handle_request:exit")
         return response_message
 
@@ -47,10 +47,12 @@ class IncomingClientSession(ServerSession):
             client_identity_public_key, message_bytes)
         return int_to_be_bytes(shared_secret_public_key.to_point()[0])
 
-    async def on_handshake(self, identity_public_key: PublicKey) -> None:
-        self.client_identity_pubkey = identity_public_key
+    async def process_handshake(self, message: HandshakeNotification) -> None:
+        await super().process_handshake(message)
+
+        self.client_identity_pubkey = message.remote_public_key
         self.client_identity_id = self.app.dbapi.get_id_for_identity(
-            identity_public_key)
+            message.remote_public_key)
 
     async def on_register_identity(self, identity_id: int) -> None:
         self.client_identity_id = identity_id

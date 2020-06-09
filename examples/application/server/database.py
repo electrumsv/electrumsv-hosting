@@ -19,17 +19,17 @@ class BaseModel(Model):
 
 
 class Identity(BaseModel):
-    identity_pubkey = CharField(max_length=66, unique=True)  # hex
+    identity_pubkey = BlobField(unique=True)
     date_created = DateTimeField(default=datetime.datetime.now)
 
 
 class IdentityMessage(BaseModel):
     message_id = IntegerField()
     date_created = DateTimeField(default=datetime.datetime.now)
-    receiver_pubkey = CharField(max_length=66)
+    sender_pubkey = BlobField()
     sender_timestamp = DateTimeField()
     sender_nonce = BlobField()
-    sender_signature = CharField()
+    sender_signature = BlobField()
     payload_hash = BlobField()
     payload = BlobField()  # base_64_encoded ciphertext
     identity = ForeignKeyField(Identity, backref="messages")
@@ -41,24 +41,25 @@ class IdentityMessage(BaseModel):
 class DatabaseAPI:
     def create_identity(self, identity_pubkey: PublicKey) -> int:
         # pylint: disable=no-value-for-parameter
-        return Identity.insert(identity_pubkey=identity_pubkey.to_hex()).execute()
+        return Identity.insert(identity_pubkey=identity_pubkey.to_bytes()).execute()
 
     def get_id_for_identity(self, identity_pubkey: PublicKey) -> Optional[int]:
         try:
             return Identity.select(Identity.id).where(
-                Identity.identity_pubkey == identity_pubkey.to_hex()).get().id
+                Identity.identity_pubkey == identity_pubkey.to_bytes()).get().id
         except Identity.DoesNotExist:
             return None
 
-    def insert_message(self, identity_id: int, receiver_pubkey: PublicKey, sender_timestamp: int,
+    def insert_message(self, identity_id: int, sender_pubkey: PublicKey, sender_timestamp: int,
             sender_nonce: bytes, sender_signature: str, payload_hash: bytes, payload: bytes) \
                 -> None:
         latest_message_id = self.get_latest_message_id(identity_id)
         message_id = latest_message_id + 1
         # pylint: disable=no-value-for-parameter
         IdentityMessage.insert(identity = identity_id,
+            date_created=datetime.datetime.now(),
             message_id = message_id,
-            receiver_pubkey = receiver_pubkey.to_hex(),
+            sender_pubkey = sender_pubkey.to_bytes(),
             sender_timestamp = sender_timestamp,
             sender_nonce = sender_nonce,
             sender_signature = sender_signature,
@@ -77,8 +78,8 @@ class DatabaseAPI:
         return (IdentityMessage
             .select()
             .join(Identity)
-            .where(IdentityMessage.message_id == message_id &
-                IdentityMessage.identity.id == identity_id)
+            .where((IdentityMessage.message_id == message_id) &
+                (IdentityMessage.identity_id == identity_id))
             .get())
 
 

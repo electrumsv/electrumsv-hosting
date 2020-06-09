@@ -25,7 +25,9 @@ from .exceptions import AuthenticationError, ConnectionNotEstablishedError
 from .utils import get_nonce, get_timestamp
 
 
-logger = logging.getLogger("esvhosting-core")
+logger = logging.getLogger("esvhosting.core")
+data_logger = logging.getLogger("esvhosting.data")
+data_logger.disabled = True
 
 PROTOCOL_VERSION = 1
 HANDSHAKE_TIMESTAMP_VARIANCE = 5
@@ -34,30 +36,6 @@ class ErrorCodes(enum.IntEnum):
     INVALID_CLIENT_SIGNATURE = 20001
     INVALID_CLIENT_TIMESTAMP = 20002
     INVALID_CLIENT_VERSION = 20003
-
-
-class Header:
-    def __init__(self, sender_pubkey: PublicKey, receiver_pubkey: Optional[PublicKey],
-            sender_nonce: bytes, payload_hash, sender_signature: bytes):
-        self.sender_pubkey = sender_pubkey
-        self.receiver_pubkey = receiver_pubkey
-        self.sender_nonce = sender_nonce
-        self.payload_hash = payload_hash
-        self.sender_signature = sender_signature
-
-        # dic = {'sender_pubkey': self.sender_pubkey.to_hex(),
-        #      'sender_nonce': binary_to_hex(self.sender_nonce),
-        #      'payload_hash': binary_to_hex(self.payload_hash),
-        #      'sender_signature': base64.b64encode(self.sender_signature).decode()}
-        # if self.receiver_pubkey is not None:
-        #     dic.update({'receiver_pubkey': self.receiver_pubkey.to_hex()})
-
-        # return cls(sender_pubkey=PublicKey.from_hex(dic['sender_pubkey']),
-        #     receiver_pubkey=PublicKey.from_hex(dic.get('receiver_pubkey')) if dic.get(
-        #         'receiver_pubkey') is not None else None,
-        #     sender_nonce=bytes.fromhex(dic['sender_nonce']),
-        #     payload_hash=bytes.fromhex(dic['payload_hash']),
-        #     sender_signature=base64.b64decode(dic['sender_signature']))
 
 
 class BaseStructure:
@@ -213,6 +191,7 @@ class Packet:
 
     @classmethod
     def from_bytes(klass, data: bytes) -> 'Packet':
+        data_logger.debug("UNPACK "+ data.hex())
         packet_type, packet_id = struct.unpack_from(PACKET_FMT, data)
         message = Message.from_bytes(data[PACKET_HEADER_SIZE:])
         return Packet(packet_type, message, packet_id)
@@ -220,6 +199,7 @@ class Packet:
     def to_bytes(self) -> bytearray:
         buffer = bytearray(len(self))
         self.pack_into(buffer)
+        data_logger.debug("PACK "+ buffer.hex())
         return buffer
 
     def pack_into(self, buffer: bytearray, offset: int=0) -> None:
@@ -248,12 +228,14 @@ class BaseFramer:
         packet_bytes = packet.to_bytes()
         if packet.message.message_type != HANDSHAKE_MESSAGE_TYPE:
             packet_bytes = self._outgoing_cipher.encrypt(packet_bytes)
+            data_logger.debug("encrypt "+ packet_bytes.hex())
         return b''.join((
             struct.pack("<I", len(packet_bytes)),
             packet_bytes,
         ))
 
     def process_payload(self, payload_bytes: bytes) -> bytes:
+        data_logger.debug("decrypt "+ payload_bytes.hex())
         return self._incoming_cipher.decrypt(payload_bytes)
 
     async def receive_message(self) -> Packet:
@@ -440,16 +422,17 @@ class ServerSession(BaseSession):
     async def handle_request(self, packet: Packet) -> Any:
         if packet.message.message_type == HANDSHAKE_MESSAGE_TYPE:
             logger.debug("server handshake: processing")
-            message: HandshakeNotification = packet.message
-            message.validate()
-
-            secret_message_bytes = message.get_message_bytes()
-            shared_secret = await self.get_shared_secret(message.remote_public_key,
-                secret_message_bytes)
-            self.transport._framer.setup_encryption(shared_secret, message.nonce_bytes)
+            await self.process_handshake(packet.message)
             logger.debug("server handshake: processed")
             return None
 
         await super().handle_request(packet)
         return None
 
+    async def process_handshake(self, message: HandshakeNotification) -> None:
+        message.validate()
+
+        secret_message_bytes = message.get_message_bytes()
+        shared_secret = await self.get_shared_secret(message.remote_public_key,
+            secret_message_bytes)
+        self.transport._framer.setup_encryption(shared_secret, message.nonce_bytes)

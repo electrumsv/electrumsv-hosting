@@ -9,7 +9,7 @@ from functools import partial
 
 import aiorpcx
 from bitcoinx import int_to_be_bytes, PublicKey, PrivateKey
-from electrumsv_hosting.core import core
+from electrumsv_hosting import connection
 from electrumsv_hosting.messagebox import MessageType
 
 from server.constants import ALICE_TEST_IDENTITY_PUBLIC_KEY, SERVER_PRIVATE_KEY, SERVER_PUBLIC_KEY,\
@@ -76,6 +76,8 @@ def get_configuration() -> Dict:
 
 
 def setup():
+    connection.HandshakeNotification.register()
+
     config = {}
     config.update(get_configuration())
     database.load(config)

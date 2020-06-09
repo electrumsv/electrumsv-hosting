@@ -1,22 +1,33 @@
 import struct
-from typing import Type
+from typing import Optional, Type
 
-from bitcoinx import PublicKey
+from bitcoinx import PrivateKey, PublicKey
 
 from .constants import MESSAGE_FMT, MESSAGE_TYPE_SIZE, MessageType
 from .connection import BaseStructure, Message
+
+
+class EmptyMessage(Message):
+    @classmethod
+    def from_bytes(klass, buffer: bytes) -> Type['EmptyMessage']:
+        return klass()
 
 
 class MessageHeader(BaseStructure):
     FMT = "33s33s8s32s65s"
 
     def __init__(self, sender_pubkey: PublicKey, receiver_pubkey: PublicKey, sender_nonce: bytes,
-            payload_hash: bytes, sender_signature: bytes) -> None:
+            payload_hash: bytes, sender_signature: Optional[bytes]=None) -> None:
         self.sender_pubkey = sender_pubkey
         self.receiver_pubkey = receiver_pubkey
         self.sender_nonce = sender_nonce
         self.payload_hash = payload_hash
         self.sender_signature = sender_signature
+
+    def sign(self, sender_private_key: PrivateKey) -> None:
+        for_signing: str = self.sender_pubkey.to_bytes() + self.receiver_pubkey.to_bytes() \
+            + self.sender_nonce + self.payload_hash
+        self.sender_signature = sender_private_key.sign_message(for_signing)
 
     @classmethod
     def from_bytes(klass, data: bytes, offset: int=0) -> 'MessageHeader':
@@ -28,12 +39,13 @@ class MessageHeader(BaseStructure):
             sender_signature)
 
     def pack_into(self, buffer: bytearray, offset: int=0) -> None:
+        assert self.sender_signature is not None, "message header has not been signed"
         struct.pack_into(self.FMT, buffer, offset,
             self.sender_pubkey.to_bytes(), self.receiver_pubkey.to_bytes(),
             self.sender_nonce, self.payload_hash, self.sender_signature)
 
 
-class SubscriptionRequest(Message):
+class SubscriptionRequest(EmptyMessage):
     message_type = MessageType.SUBSCRIPTION_REQUEST
 
 
@@ -43,16 +55,16 @@ class SubscriptionResponse(Message):
     COUNT_FMT = "I"
     FMT = MESSAGE_FMT + COUNT_FMT
 
-    def __init__(self, counter: int) -> None:
-        self.counter = counter
+    def __init__(self, latest_id: int) -> None:
+        self.latest_id = latest_id
 
     @classmethod
     def from_bytes(self, data: bytes) -> 'SubscriptionResponse':
-        _message_type, mailbox_counter = struct.unpack_from(self.FMT, data)
-        return SubscriptionResponse(mailbox_counter)
+        _message_type, latest_id = struct.unpack_from(self.FMT, data)
+        return SubscriptionResponse(latest_id)
 
     def pack_into(self, buffer: bytearray, offset: int=0) -> None:
-        struct.pack_into(self.FMT, buffer, offset, self.message_type, self.counter)
+        struct.pack_into(self.FMT, buffer, offset, self.message_type, self.latest_id)
 
 
 class GetMessageRequest(Message):
@@ -83,15 +95,18 @@ class HeaderDataMessage(Message):
     @classmethod
     def from_bytes(klass, buffer: bytes) -> Type['HeaderDataMessage']:
         header = MessageHeader.from_bytes(buffer, MESSAGE_TYPE_SIZE)
-        data = buffer[MESSAGE_TYPE_SIZE + header.size():]
+        data = buffer[MESSAGE_TYPE_SIZE + len(header):]
         return klass(header, data)
 
     def pack_into(self, buffer: bytearray, offset: int=0) -> None:
         super().pack_into(buffer, offset)
-        offset += self.size()
+        offset += MESSAGE_TYPE_SIZE
         self.header.pack_into(buffer, offset)
-        offset += self.header.size()
+        offset += len(self.header)
         buffer[offset:] = self.data
+
+    def __len__(self) -> int:
+        return MESSAGE_TYPE_SIZE + len(self.header) + len(self.data)
 
 
 class GetMessageResponse(HeaderDataMessage):
@@ -102,15 +117,15 @@ class SendMessageRequest(HeaderDataMessage):
     message_type = MessageType.SEND_MESSAGE_REQUEST
 
 
-class SendMessageResponse(Message):
+class SendMessageResponse(EmptyMessage):
     message_type = MessageType.SEND_MESSAGE_RESPONSE
 
 
-class RegisterIdentityRequest(Message):
+class RegisterIdentityRequest(EmptyMessage):
     message_type = MessageType.REGISTER_IDENTITY_REQUEST
 
 
-class RegisterIdentityResponse(Message):
+class RegisterIdentityResponse(EmptyMessage):
     message_type = MessageType.REGISTER_IDENTITY_RESPONSE
 
 

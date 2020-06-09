@@ -6,14 +6,14 @@ import logging
 import traceback
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
-import aiorpcx
+from aiorpcx import RPCError
 import bitcoinx
 from bitcoinx import PrivateKey, PublicKey
 
-from electrumsv_hosting.connection import Header, Message, HandshakeNotification
-from electrumsv_hosting.messagebox import (GetMessageRequest, GetMessageResponse, MessageType,
-    RegisterIdentityRequest, RegisterIdentityResponse, SendMessageRequest, SendMessageResponse,
-    SubscriptionRequest, SubscriptionResponse)
+from electrumsv_hosting.connection import Message, HandshakeNotification
+from electrumsv_hosting.messagebox import (GetMessageRequest, GetMessageResponse, MessageHeader,
+    MessageType, RegisterIdentityRequest, RegisterIdentityResponse, SendMessageRequest,
+    SendMessageResponse, SubscriptionRequest, SubscriptionResponse)
 from electrumsv_hosting.utils import get_nonce, binary_to_hex, hash_payload
 
 from .constants import BOB_TEST_IDENTITY_PUBLIC_KEY, ALICE_TEST_IDENTITY_PUBLIC_KEY, \
@@ -34,7 +34,8 @@ def register_message_handler(message_type: MessageType):
     return Decorator
 
 
-class APIException(Exception):
+# BaseSession.handle_request only dispatches RPCError subclasses back to the other endpoint.
+class APIException(RPCError):
     pass
 
 
@@ -44,12 +45,13 @@ APIHandlerSignature = Callable[[Message],Optional[Message]]
 class BaseAPI:
     handlers: Dict[MessageType, str] = {}
 
-    async def dispatch_message(self, message: Message) -> Optional[Message]:
+    async def dispatch_message(self, session: 'IncomingClientSession', message: Message) \
+            -> Optional[Message]:
         handler_name = self.handlers.get(message.message_type)
         if handler_name is None:
-            raise APIException("Handler not found")
+            raise APIException(1, "Handler not found")
         handler: APIHandlerSignature = getattr(self, handler_name)
-        return await handler(message)
+        return await handler(session, message)
 
 
 class PublicAPI(BaseAPI):
@@ -61,24 +63,24 @@ class PublicAPI(BaseAPI):
     @register_message_handler(MessageType.HANDSHAKE_REQUEST)
     async def connection_handshake(self, session: 'IncomingClientSession',
             message: HandshakeNotification) -> None:
-        await session.on_handshake(message.identity_public_key)
+        await session.process_handshake(message)
         return None
 
     @register_message_handler(MessageType.REGISTER_IDENTITY_REQUEST)
     async def register_identity(self, session: 'IncomingClientSession',
             message: RegisterIdentityRequest) -> RegisterIdentityResponse:
         if session.client_identity_id is not None:
-            raise APIException("session already registered")
+            raise APIException(2, "session already registered")
 
         identity_pubkey = session.client_identity_pubkey
         identity_id = session.app.dbapi.get_id_for_identity(identity_pubkey)
         if identity_id is not None:
-            raise APIException("identity key already registered")
+            raise APIException(3, "identity key already registered")
 
         identity_id = session.app.dbapi.create_identity(identity_pubkey)
         self._logger.debug("register_identity key=%s id=%d", identity_pubkey.to_hex(), identity_id)
 
-        session.on_register_identity(identity_id)
+        await session.on_register_identity(identity_id)
         return RegisterIdentityResponse()
 
 
@@ -106,42 +108,40 @@ class RestrictedAPI(BaseAPI):
     async def subscribe_to_messagebox(self, session: 'IncomingClientSession',
             message: SubscriptionRequest) -> SubscriptionResponse:
         identity_pubkey = session.client_identity_pubkey
-        self._logger.debug("received 'subscribe_to_messagebox' request for identity_pubkey: "
-            "'%s' from client", identity_pubkey.to_hex())
         latest_message_id = session.app.dbapi.get_latest_message_id(session.client_identity_id)
+        self._logger.debug("received 'subscribe_to_messagebox' request for identity_pubkey: "
+            "'%s' from client, latest=%d", identity_pubkey.to_hex(), latest_message_id)
         return SubscriptionResponse(latest_message_id)
 
     @register_message_handler(MessageType.GET_MESSAGE_REQUEST)
     async def get_message(self, session: 'IncomingClientSession', message: GetMessageRequest) \
             -> GetMessageResponse:
         identity_pubkey = session.client_identity_pubkey
-        self._logger.debug("received 'get_message' request for identity_pubkey: '%s' from client",
-            identity_pubkey.to_hex())
+        self._logger.debug("received 'get_message' request for identity_pubkey: '%s' from "
+            "client %d",
+            identity_pubkey.to_hex(), message.message_id)
         m = session.app.dbapi.get_message(session.client_identity_id, message.message_id)
-        sender_pubkey = PublicKey.from_hex(m.identity.identity_pubkey)
-        receiver_pubkey = PublicKey.from_hex(m.receiver_pubkey)
-        header = Header(sender_pubkey, receiver_pubkey, m.sender_nonce, m.payload_hash,
-            m.sender_signature)
+        receiver_pubkey = PublicKey.from_bytes(m.identity.identity_pubkey.tobytes())
+        sender_pubkey = PublicKey.from_bytes(m.sender_pubkey.tobytes())
+        header = MessageHeader(sender_pubkey, receiver_pubkey, m.sender_nonce.tobytes(),
+            m.payload_hash.tobytes(), m.sender_signature.tobytes())
         return GetMessageResponse(header, m.payload)
 
     @register_message_handler(MessageType.SEND_MESSAGE_REQUEST)
-    async def send_message(self, session: 'IncomingClientSession', message: SendMessageRequest) \
+    async def receive_message(self, session: 'IncomingClientSession', message: SendMessageRequest) \
             -> SendMessageResponse:
         # Check signature.
 
-
+        header = message.header
         self._logger.debug("header=%s", header)
-        self._logger.debug("encrypted_payload=%s", encrypted_base64_payload)
+        self._logger.debug("payload=%s", message.data.hex())
 
-        # Persist to db
-        MessageModel.insert(sender_pubkey=header_received_json['sender_pubkey'],
-                       receiver_pubkey=header_received_json['receiver_pubkey'],
-                       sender_nonce=header_received.sender_nonce,
-                       sender_signature=header_received_json['sender_signature'],
-                       date_created=datetime.datetime.now(),
-                       payload=base64.b64decode(encrypted_base64_payload)).execute()
+        receiver_id = session.app.dbapi.get_id_for_identity(header.receiver_pubkey)
+        if receiver_id is None:
+            raise APIException(4, "Unknown recipient")
 
-        payload_bytes = base64.b64decode(encrypted_base64_payload)
-        header_response = self._make_header(payload_bytes)
-        return json.dumps({"header": header_response.to_dict(),
-                           "status": "message received"})
+        session.app.dbapi.insert_message(receiver_id, header.sender_pubkey,
+            datetime.datetime.now(), header.sender_nonce, header.sender_signature,
+            header.payload_hash, message.data)
+
+        return SendMessageResponse()
